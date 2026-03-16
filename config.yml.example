@@ -1,0 +1,53 @@
+# HTTP server port
+port: 8080
+
+# Path to agent context markdown file.
+# This file is prepended to every prompt. Version-control and edit it to tune agent behavior.
+agent_context_path: /config/agent_context.md
+
+# Git identity used for commits made by the orchestrator.
+git_user_name: Chisel Bot
+git_user_email: chisel@example.com
+
+# Base directory where repos will be cloned on startup.
+repos_base_path: /repos
+
+# Directory for per-job logs. Should be a host-mounted volume so logs survive restarts.
+log_dir: /logs
+
+# Maximum number of agentic turns (model response cycles) per job.
+# Each turn may involve multiple tool calls. 40 is a generous budget for a single-PR change.
+# Increase if jobs are consistently hitting the limit on legitimate tasks.
+max_turns: 40
+
+# Job wall-clock timeout in seconds. 0 = indefinite (default).
+# If set, the job is killed and marked failed after this many seconds regardless of turns used.
+job_timeout: 0
+
+# Discord configuration (all fields ignored if DISCORD_TOKEN is not set)
+discord:
+  ops_channel_id: 0             # Channel ID for ops status posts (required if bot enabled)
+  slash_command_prefix: ""      # Optional prefix for all slash commands, e.g. "chisel-"
+  allowed_roles:                # Discord role IDs permitted to use the bot
+    # - 123456789012345678      # e.g. Developer role
+    # - 987654321098765432      # e.g. Admin role
+    # If empty or omitted, all users can interact with the bot.
+
+# Repositories available to the agent.
+# On startup, each repo is cloned if not already present at its derived local path:
+#   <repos_base_path>/<last segment of github_url>
+# e.g. https://github.com/org/monumenta-plugins -> /repos/monumenta-plugins
+#
+# The context string for each repo is included verbatim in the agent's prompt.
+# The agent may READ from all repos but should only MODIFY one per job.
+repos:
+  - github_url: https://github.com/org/repo-one
+    main_branch: main
+    context: >
+      Primary plugin repo. Java/Gradle project. Most tasks will involve changes here.
+      Abort if the fix also requires changes to another repository.
+  - github_url: https://github.com/org/repo-two
+    main_branch: master
+    context: >
+      Secondary repo. Only modify this repo if explicitly required by the task.
+      Abort if a fix requires changes to more than one repository.
