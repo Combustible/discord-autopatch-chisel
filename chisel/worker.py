@@ -35,10 +35,12 @@ def build_prompt(config: ChiselConfig, request: str) -> str:
     return f"{preamble}\n\n---\n\n{repos_block}\n\n---\n\n{request}"
 
 
-def _source_str(source_user_id: Optional[int]) -> str:
-    if source_user_id is None:
+def _source_str(job: PendingJob) -> str:
+    if job.source_user_id is None:
         return "/submit"
-    return f"<@{source_user_id}>"
+    if job.source_display_name:
+        return job.source_display_name
+    return f"user:{job.source_user_id}"
 
 
 def _repo_owner_name(github_url: str) -> str:
@@ -76,7 +78,7 @@ async def _post_ops_start(
     msg = (
         f"[STARTED] `{job.job_id[:8]}` | "
         f"req: `{job.requester_id}` | "
-        f"source: {_source_str(job.source_user_id)}"
+        f"source: {_source_str(job)}"
     )
     if bot is not None and config.discord.ops_channel_id:
         try:
@@ -88,7 +90,8 @@ async def _post_ops_start(
 
 
 async def _post_ops_complete(
-    bot: Optional["ChiselBot"], config: ChiselConfig, result: JobResult
+    bot: Optional["ChiselBot"], config: ChiselConfig, result: JobResult,
+    user_prompt: str,
 ) -> None:
     if result.status == "success":
         header = f"[SUCCESS] `{result.job_id[:8]}` | {result.pr_url} | {result.message}"
@@ -97,12 +100,16 @@ async def _post_ops_complete(
     else:
         header = f"[DECLINED] `{result.job_id[:8]}` | {result.message}"
 
+    short_id = result.job_id[:8]
     attach_files: list[tuple[str, str]] = []
-    if result.status in ("success", "failure"):
-        attach_files = [
-            (f"summary-{result.job_id[:8]}.txt", result.summary),
-            (f"detail-{result.job_id[:8]}.txt", result.detail),
-        ]
+    if user_prompt:
+        attach_files.append((f"prompt-{short_id}.txt", user_prompt))
+    if result.summary:
+        attach_files.append((f"summary-{short_id}.txt", result.summary))
+    if result.detail:
+        attach_files.append((f"detail-{short_id}.txt", result.detail))
+    if result.abort:
+        attach_files.append((f"abort-{short_id}.txt", result.abort))
 
     if bot is not None and config.discord.ops_channel_id:
         try:
@@ -136,6 +143,7 @@ async def run_job(
                 message="Open branch already exists for this request",
                 summary="",
                 detail="",
+                abort="",
                 pr_url=None,
             )
 
@@ -149,13 +157,14 @@ async def run_job(
         await _run_cmd(["git", "-C", repo.local_path, "clean", "-fd"])
 
     # --- Step 3: Create workspace dir ---
-    job_dir = Path(config.log_dir) / job.job_id
+    job_dir = Path(config.log_dir) / f"{timestamp}-{job.job_id}"
     workspace_dir = job_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Step 4: Build and write prompt ---
     prompt = build_prompt(config, job.message)
-    (job_dir / "prompt.txt").write_text(prompt, encoding='utf-8')
+    (job_dir / "CHISEL_PROMPT.txt").write_text(job.message, encoding='utf-8')
+    (job_dir / "CHISEL_FULL_PROMPT.txt").write_text(prompt, encoding='utf-8')
 
     # --- Steps 5-7: Launch subprocess and stream ---
     result_event: dict[str, object] = {}
@@ -258,6 +267,7 @@ async def run_job(
             logger.warning("No result event captured from agent for job %s", job.job_id)
         manager.current_proc = None
 
+
     # --- Step 8: Read output files ---
     def _read_file(name: str) -> str:
         p = workspace_dir / name
@@ -279,6 +289,7 @@ async def run_job(
             message=killed_reason[:200],
             summary=summary,
             detail=detail,
+            abort=abort_text,
             pr_url=None,
         )
 
@@ -291,6 +302,7 @@ async def run_job(
             message=first_line or "Agent aborted",
             summary=summary,
             detail=detail,
+            abort=abort_text,
             pr_url=None,
         )
 
@@ -303,6 +315,7 @@ async def run_job(
             message=f"Agent error: {subtype}"[:200],
             summary=summary,
             detail=detail,
+            abort=abort_text,
             pr_url=None,
         )
 
@@ -314,6 +327,7 @@ async def run_job(
             message="Agent found no changes to make",
             summary=summary,
             detail=detail,
+            abort=abort_text,
             pr_url=None,
         )
 
@@ -334,6 +348,7 @@ async def run_job(
             message="Agent modified multiple repositories; aborting git operations",
             summary=summary,
             detail=detail,
+            abort=abort_text,
             pr_url=None,
         )
 
@@ -345,6 +360,7 @@ async def run_job(
             message="Agent found no changes to make",
             summary=summary,
             detail=detail,
+            abort=abort_text,
             pr_url=None,
         )
 
@@ -378,6 +394,7 @@ async def run_job(
         message=f"PR created: {title}"[:200],
         summary=summary,
         detail=detail,
+        abort=abort_text,
         pr_url=pr_url,
     )
 
@@ -403,6 +420,7 @@ async def worker_loop(
                 message="Internal orchestrator error",
                 summary="",
                 detail="",
+                abort="",
                 pr_url=None,
             )
         finally:
@@ -411,7 +429,7 @@ async def worker_loop(
             if job in manager.pending:
                 manager.pending.remove(job)
 
-        await _post_ops_complete(bot, config, result)
+        await _post_ops_complete(bot, config, result, job.message)
         try:
             await job.callback_fn(result)
         except Exception:  # pylint: disable=broad-exception-caught

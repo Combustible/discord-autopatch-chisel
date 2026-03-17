@@ -175,13 +175,14 @@ Job status is posted to the configured `ops_channel_id` for all jobs regardless 
 (HTTP or Discord):
 
 ```
-[STARTED]  `{job_id[:8]}` | req: `{requester_id}` | source: {/submit | <@user_id>}
+[STARTED]  `{job_id[:8]}` | req: `{requester_id}` | source: {/submit | display_name}
 [SUCCESS]  `{job_id[:8]}` | {pr_url} | {short_message}
 [FAILURE]  `{job_id[:8]}` | {short_message}
 [DECLINED] `{job_id[:8]}` | {short_message}
 ```
 
-On `SUCCESS` or `FAILURE`, the ops post includes `summary` and `detail` as file attachments.
+On all outcomes, the following non-empty files are attached: `prompt` (user-supplied),
+`summary`, `detail`, and `abort` (if present). Empty files are omitted.
 
 ---
 
@@ -203,9 +204,10 @@ Each job:
 Agent environment: `DISCORD_TOKEN` and `GITHUB_TOKEN` are stripped. The agent cannot push
 branches or post to Discord.
 
-Per-job logs are written to `<log_dir>/<job_id>/`:
-- `prompt.txt` - full prompt sent to the agent
-- `agent.log` - full stream-json output
+Per-job logs are written to `<log_dir>/<timestamp>-<job_id>/`:
+- `CHISEL_PROMPT.txt` - user-supplied portion of the prompt
+- `CHISEL_FULL_PROMPT.txt` - full prompt sent to the agent (preamble + repo context + user prompt)
+- `agent.log` - combined agent stdout and stderr (stderr lines prefixed with `[stderr]`)
 - `workspace/` - agent working directory containing output files
 
 ---

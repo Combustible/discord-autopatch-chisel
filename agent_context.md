@@ -84,6 +84,9 @@ may elaborate. Be concrete: name the class, file, or condition that caused the a
   target monumenta-plugins; only modify a secondary repo if the task explicitly requires it.
 - **Do not use Unicode characters** in any code you write, commit messages, or output
   files. Use ASCII only.
+- **Do not hard-wrap lines in output files.** Write each paragraph as a single unbroken
+  line. Do not insert newlines at 80 characters or any other column width. Blank lines
+  between paragraphs are fine; mid-paragraph line breaks are not.
 
 ## Monumenta Project Conventions
 

@@ -75,10 +75,12 @@ class ChiselBot(commands.Bot):
         """DM the submitting user with the job outcome."""
         try:
             user = await self.fetch_user(discord_user_id)
+            body = result.summary if result.summary else result.message
+            quoted = '\n'.join(f'> {line}' for line in body.splitlines())
             await user.send(
                 f"Your chisel request `{result.job_id[:8]}` is complete.\n"
                 f"**Status:** {result.status}\n"
-                f"{result.message}"
+                f"{quoted}"
             )
         except discord.Forbidden:
             logger.exception("Could not DM user %d (DMs may be disabled)", discord_user_id)
@@ -128,6 +130,7 @@ class ChiselBot(commands.Bot):
                 message=request,
                 callback_fn=_callback,
                 source_user_id=user_id,
+                source_display_name=interaction.user.display_name,
             )
 
             if status == "queued":

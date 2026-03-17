@@ -15,7 +15,8 @@ class PendingJob:
     message: str
     callback_fn: Callable[["JobResult"], Awaitable[None]]
     submitted_at: float
-    source_user_id: Optional[int]  # Discord user ID; None for HTTP /submit
+    source_user_id: Optional[int]    # Discord user ID; None for HTTP /submit
+    source_display_name: Optional[str]  # Discord display name; None for HTTP /submit
 
 
 @dataclass
@@ -26,6 +27,7 @@ class JobResult:
     message: str         # short human-readable status (<=200 chars)
     summary: str         # contents of CHISEL_SUMMARY.txt
     detail: str          # contents of CHISEL_DETAIL.txt
+    abort: str           # contents of CHISEL_ABORT.txt (empty if not aborted)
     pr_url: Optional[str]
 
 
@@ -43,6 +45,7 @@ class ChiselManager:
         message: str,
         callback_fn: Callable[[JobResult], Awaitable[None]],
         source_user_id: Optional[int] = None,
+        source_display_name: Optional[str] = None,
     ) -> tuple[str, str]:
         """Submit a job. Returns (job_id, status) where status is 'queued' or 'duplicate'."""
         if self.current_job and self.current_job.requester_id == requester_id:
@@ -58,6 +61,7 @@ class ChiselManager:
             callback_fn=callback_fn,
             submitted_at=time.time(),
             source_user_id=source_user_id,
+            source_display_name=source_display_name,
         )
         self.pending.append(job)
         self._queue.put_nowait(job)
