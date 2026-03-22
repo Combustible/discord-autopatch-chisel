@@ -2,17 +2,22 @@
 # Copyright (C) 2026 Byron Marohn
 """Worker loop and job execution for Chisel."""
 import asyncio
+import base64
 import json
 import logging
 import os
 import sys
 import time
+import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse
 
+import aiohttp
+
 from .api import ChiselManager, JobResult, PendingJob
-from .config import ChiselConfig, RepoConfig
+from .config import ChiselConfig, PollSourceConfig, RepoConfig
 
 if TYPE_CHECKING:
     from bot import ChiselBot
@@ -35,14 +40,6 @@ def build_prompt(config: ChiselConfig, request: str) -> str:
     return f"{preamble}\n\n---\n\n{repos_block}\n\n---\n\n{request}"
 
 
-def _source_str(job: PendingJob) -> str:
-    if job.source_user_id is None:
-        return "/submit"
-    if job.source_display_name:
-        return job.source_display_name
-    return f"user:{job.source_user_id}"
-
-
 def _repo_owner_name(github_url: str) -> str:
     """Extract 'owner/repo' from a GitHub HTTPS URL."""
     path = urlparse(github_url).path.strip('/')
@@ -51,7 +48,7 @@ def _repo_owner_name(github_url: str) -> str:
     return path
 
 
-async def _run_cmd(
+async def run_cmd(
     cmd: list[str],
     cwd: Optional[str] = None,
     env: Optional[dict[str, str]] = None,
@@ -72,19 +69,44 @@ async def _run_cmd(
     return out.decode(errors='replace'), err.decode(errors='replace')
 
 
+async def _retry(
+    coro_fn: Callable[[], Awaitable[None]],
+    label: str,
+    max_attempts: Optional[int] = None,
+) -> None:
+    """Call coro_fn(), retrying with exponential backoff on any exception.
+
+    If max_attempts is None, retries indefinitely. If max_attempts is set,
+    gives up after that many failures and logs a final error.
+    """
+    delay = 5.0
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await coro_fn()
+            return
+        except Exception:  # pylint: disable=broad-exception-caught
+            if max_attempts is not None and attempt >= max_attempts:
+                logger.exception("%s: failed after %d attempts, giving up", label, attempt)
+                return
+            logger.exception(
+                "%s: attempt %d failed, retrying in %.0fs", label, attempt, delay
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120.0)
+
+
 async def _post_ops_start(
     bot: Optional["ChiselBot"], config: ChiselConfig, job: PendingJob
 ) -> None:
     msg = (
         f"[STARTED] `{job.job_id[:8]}` | "
         f"req: `{job.requester_id}` | "
-        f"source: {_source_str(job)}"
+        f"source: {job.source_label}"
     )
     if bot is not None and config.discord.ops_channel_id:
-        try:
-            await bot.post_ops(msg)
-        except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("Failed to post [STARTED] to ops channel")
+        await bot.post_ops(msg)
     else:
         logger.info(msg)
 
@@ -112,14 +134,85 @@ async def _post_ops_complete(
         attach_files.append((f"abort-{short_id}.txt", result.abort))
 
     if bot is not None and config.discord.ops_channel_id:
-        try:
-            await bot.post_ops(header, files=attach_files)
-        except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("Failed to post [%s] to ops channel", result.status.upper())
+        await bot.post_ops(header, files=attach_files)
     else:
         logger.info(header)
         if result.summary:
             logger.info("Summary:\n%s", result.summary)
+
+
+async def _try_poll_source(
+    source: PollSourceConfig,
+    session: aiohttp.ClientSession,
+) -> Optional[PendingJob]:
+    """Poll a single source. Returns a PendingJob on 200, None on 204 or unexpected status."""
+    headers: dict[str, str] = {}
+    if source.basic_auth:
+        encoded = base64.b64encode(source.basic_auth.encode()).decode()
+        headers["Authorization"] = f"Basic {encoded}"
+
+    async with session.post(
+        source.url, headers=headers, json={},
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as resp:
+        if resp.status == 204:
+            return None
+        if resp.status != 200:
+            logger.warning(
+                "Poll source '%s' returned unexpected status %d", source.name, resp.status
+            )
+            return None
+
+        data: dict[str, object] = await resp.json()
+        message = str(data["message"])
+        requester_id = str(data["requester_id"])
+        callback_url = str(data["callback_url"])
+
+    async def _http_callback(result: JobResult) -> None:
+        payload: dict[str, object] = {
+            "job_id": result.job_id,
+            "requester_id": result.requester_id,
+            "status": result.status,
+            "message": result.message,
+            "summary": result.summary,
+            "detail": result.detail,
+        }
+        if result.pr_url is not None:
+            payload["pr_url"] = result.pr_url
+        async with session.post(
+            callback_url, json=payload,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as r:
+            if r.status >= 400:
+                raise RuntimeError(
+                    f"Callback to {callback_url} returned HTTP {r.status}"
+                )
+
+    return PendingJob(
+        job_id=str(uuid.uuid4()),
+        requester_id=requester_id,
+        message=message,
+        callback_fn=_http_callback,
+        submitted_at=time.time(),
+        source_user_id=None,
+        source_label=source.name,
+    )
+
+
+async def _poll_sources(
+    sources: list[PollSourceConfig],
+    session: aiohttp.ClientSession,
+) -> Optional[PendingJob]:
+    """Try each source in order; return the first job found, or None if all are empty."""
+    for source in sources:
+        try:
+            job = await _try_poll_source(source, session)
+            if job is not None:
+                logger.info("Claimed job from poll source '%s': %s", source.name, job.requester_id)
+                return job
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception("Error polling source '%s'", source.name)
+    return None
 
 
 async def run_job(
@@ -131,7 +224,7 @@ async def run_job(
 
     # --- Step 1: Remote branch dedup ---
     for repo in config.repos:
-        stdout, _ = await _run_cmd([
+        stdout, _ = await run_cmd([
             "git", "-C", repo.local_path, "ls-remote", "origin",
             f"refs/heads/chisel/{job.requester_id}-*",
         ])
@@ -149,12 +242,12 @@ async def run_job(
 
     # --- Step 2: Prep repos ---
     for repo in config.repos:
-        await _run_cmd(["git", "-C", repo.local_path, "fetch", "origin"])
-        await _run_cmd([
+        await run_cmd(["git", "-C", repo.local_path, "fetch", "origin"])
+        await run_cmd([
             "git", "-C", repo.local_path, "checkout", "-b",
             branch_name, f"origin/{repo.main_branch}",
         ])
-        await _run_cmd(["git", "-C", repo.local_path, "clean", "-fd"])
+        await run_cmd(["git", "-C", repo.local_path, "clean", "-fd"])
 
     # --- Step 3: Create workspace dir ---
     job_dir = Path(config.log_dir) / f"{timestamp}-{job.job_id}"
@@ -241,7 +334,8 @@ async def run_job(
         while not stdout_task.done():
             if manager.abort_event.is_set():
                 proc.terminate()
-                killed_reason = "Job aborted by operator"
+                aborting_user = manager.aborting_user or "operator"
+                killed_reason = f"Aborted by {aborting_user}"
                 break
 
             now = asyncio.get_running_loop().time()
@@ -334,7 +428,7 @@ async def run_job(
     # --- Step 10: Git operations ---
     repos_with_changes: list[RepoConfig] = []
     for repo in config.repos:
-        status_out, _ = await _run_cmd([
+        status_out, _ = await run_cmd([
             "git", "-C", repo.local_path, "status", "--porcelain",
         ])
         if status_out.strip():
@@ -365,20 +459,20 @@ async def run_job(
         )
 
     changed_repo = repos_with_changes[0]
-    await _run_cmd(["git", "-C", changed_repo.local_path, "add", "-A"])
-    await _run_cmd([
+    await run_cmd(["git", "-C", changed_repo.local_path, "add", "-A"])
+    await run_cmd([
         "git", "-C", changed_repo.local_path,
         "-c", f"user.name={config.git_user_name}",
         "-c", f"user.email={config.git_user_email}",
         "commit", "-m", commit_msg,
     ])
-    await _run_cmd([
+    await run_cmd([
         "git", "-C", changed_repo.local_path, "push", "origin", branch_name,
     ])
 
     owner_repo = _repo_owner_name(changed_repo.github_url)
     title = commit_msg.split('\n')[0][:72]
-    pr_out, _ = await _run_cmd([
+    pr_out, _ = await run_cmd([
         "gh", "pr", "create",
         "--repo", owner_repo,
         "--head", branch_name,
@@ -400,22 +494,49 @@ async def run_job(
 
 
 async def worker_loop(
-    manager: ChiselManager, config: ChiselConfig, bot: Optional["ChiselBot"]
+    manager: ChiselManager,
+    config: ChiselConfig,
+    bot: Optional["ChiselBot"],
+    session: aiohttp.ClientSession,
 ) -> None:
-    """Consume jobs from the queue and execute them one at a time."""
+    """Main scheduling loop: prefer Discord queue jobs, then poll sources, then sleep."""
     while True:
-        job = await manager.get_next_job()
-        manager.current_job = job
+        # Check Discord queue first (priority)
+        job = manager.try_get_discord_job()
+
+        # If no Discord job, poll external sources in order
+        if job is None and config.poll_sources:
+            job = await _poll_sources(config.poll_sources, session)
+
+        # No work found; sleep and try again
+        if job is None:
+            await asyncio.sleep(config.poll_interval_seconds)
+            continue
+
+        # Rebind as non-optional for use in lambdas (pyright can't narrow through closures)
+        current_job: PendingJob = job
+
+        # Add to pending for /jobs visibility (Discord jobs already added by submit())
+        if current_job not in manager.pending:
+            manager.pending.append(current_job)
+
+        manager.current_job = current_job
         manager.abort_event.clear()
+        manager.aborting_user = None
+
         result: JobResult
         try:
-            await _post_ops_start(bot, config, job)
-            result = await run_job(job, manager, config)
+            await _retry(
+                lambda: _post_ops_start(bot, config, current_job),
+                f"ops start {current_job.job_id[:8]}",
+                max_attempts=5,
+            )
+            result = await run_job(current_job, manager, config)
         except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("Unhandled error in run_job for %s", job.job_id)
+            logger.exception("Unhandled error in run_job for %s", current_job.job_id)
             result = JobResult(
-                job_id=job.job_id,
-                requester_id=job.requester_id,
+                job_id=current_job.job_id,
+                requester_id=current_job.requester_id,
                 status="failure",
                 message="Internal orchestrator error",
                 summary="",
@@ -426,11 +547,15 @@ async def worker_loop(
         finally:
             manager.current_job = None
             manager.current_proc = None
-            if job in manager.pending:
-                manager.pending.remove(job)
+            if current_job in manager.pending:
+                manager.pending.remove(current_job)
 
-        await _post_ops_complete(bot, config, result, job.message)
-        try:
-            await job.callback_fn(result)
-        except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("callback_fn failed for job %s", job.job_id)
+        await _retry(
+            lambda: _post_ops_complete(bot, config, result, current_job.message),
+            f"ops complete {current_job.job_id[:8]}",
+            max_attempts=5,
+        )
+        await _retry(
+            lambda: current_job.callback_fn(result),
+            f"callback {current_job.job_id[:8]}",
+        )

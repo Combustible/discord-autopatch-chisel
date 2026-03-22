@@ -1,6 +1,3 @@
-# HTTP server port
-port: 8080
-
 # Path to agent context markdown file.
 # This file is prepended to every prompt. Version-control and edit it to tune agent behavior.
 agent_context_path: /config/agent_context.md
@@ -23,6 +20,19 @@ max_turns: 40
 # Job wall-clock timeout in seconds. 0 = indefinite (default).
 # If set, the job is killed and marked failed after this many seconds regardless of turns used.
 job_timeout: 0
+
+# How long to sleep between poll cycles when all sources report no work (seconds).
+poll_interval_seconds: 10
+
+# External sources to poll for work. Chisel sends POST requests to each URL in order,
+# takes the first job returned (200 OK), and starts from the top of the list on the next cycle.
+# 204 No Content means the source has no work. Omit this section for Discord-only mode.
+poll_sources:
+  - name: Exception Tracker        # shown in ops channel for jobs from this source
+    url: https://example.com/chisel/poll
+    basic_auth: "chisel:password"  # omit if not needed
+  # - name: Another Source
+  #   url: https://other.example.com/chisel/poll
 
 # Discord configuration (all fields ignored if DISCORD_TOKEN is not set)
 discord:

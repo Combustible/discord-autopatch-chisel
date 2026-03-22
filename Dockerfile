@@ -41,13 +41,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY chisel/ chisel/
-COPY server.py bot.py ./
+COPY main.py bot.py ./
 
 COPY agent_context.md /config/agent_context.md
 COPY config.yml /config/config.yml
 
 USER chisel
 
-EXPOSE 8080
-
-CMD ["python", "server.py"]
+CMD ["python", "main.py"]

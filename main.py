@@ -8,103 +8,16 @@ from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
 import aiohttp
-from pydantic import BaseModel, ValidationError
-from quart import Quart, jsonify, request
 
-from chisel.api import ChiselManager, JobResult
-from chisel.config import ChiselConfig, load_config
-from chisel.worker import worker_loop
+from chisel.api import ChiselManager
+from chisel.config import load_config
+from chisel.worker import run_cmd, worker_loop
 
 if TYPE_CHECKING:
     from bot import ChiselBot
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Pydantic request model
-# ---------------------------------------------------------------------------
-
-class SubmitRequest(BaseModel):
-    message: str
-    requester_id: str
-    callback_url: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# HTTP callback
-# ---------------------------------------------------------------------------
-
-async def http_callback(callback_url: str, result: JobResult) -> None:
-    payload: dict[str, object] = {
-        "job_id": result.job_id,
-        "requester_id": result.requester_id,
-        "status": result.status,
-        "message": result.message,
-        "summary": result.summary,
-        "detail": result.detail,
-    }
-    if result.pr_url is not None:
-        payload["pr_url"] = result.pr_url
-    async with aiohttp.ClientSession() as session:
-        try:
-            await session.post(
-                callback_url, json=payload,
-                timeout=aiohttp.ClientTimeout(total=30),
-            )
-        except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception("Callback POST to %s failed (not retrying)", callback_url)
-
-
-# ---------------------------------------------------------------------------
-# Quart app
-# ---------------------------------------------------------------------------
-
-def create_app(
-    manager: ChiselManager,
-    config: ChiselConfig,
-    bot: Optional["ChiselBot"] = None,
-) -> Quart:
-    app = Quart(__name__)
-
-    @app.post('/submit')
-    async def submit_endpoint() -> Any:
-        raw = await request.get_json(force=True)
-        if raw is None:
-            return jsonify({'error': 'expected JSON body'}), 400
-        try:
-            req = SubmitRequest.model_validate(raw)
-        except ValidationError as e:
-            return jsonify({'error': e.errors()}), 400
-
-        cb_url = req.callback_url
-
-        async def _callback(result: JobResult) -> None:
-            if cb_url:
-                await http_callback(cb_url, result)
-
-        job_id, status = manager.submit(
-            requester_id=req.requester_id,
-            message=req.message,
-            callback_fn=_callback,
-            source_user_id=None,
-        )
-        return jsonify({'job_id': job_id, 'status': status})
-
-    @app.get('/health')
-    async def health() -> Any:
-        return '', 200
-
-    @app.before_serving
-    async def startup() -> None:
-        asyncio.create_task(worker_loop(manager, config, bot))
-
-    return app
-
-
-# ---------------------------------------------------------------------------
-# Event loop helpers
-# ---------------------------------------------------------------------------
 
 def _mask_token(token: str) -> str:
     if len(token) <= 2:
@@ -114,30 +27,22 @@ def _mask_token(token: str) -> str:
 
 async def _run_cmd_startup(cmd: list[str]) -> None:
     """Run a subprocess during startup. Raises RuntimeError on non-zero exit."""
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"{cmd[0]} failed (exit {proc.returncode}): {err.decode(errors='replace')}"
-        )
+    out, _ = await run_cmd(cmd)
     if out.strip():
-        logger.info("%s output: %s", cmd[0], out.decode(errors='replace').strip())
+        logger.info("%s output: %s", cmd[0], out.strip())
 
 
 async def _run_until_stopped(
-    app: Quart,
-    port: int,
+    manager: ChiselManager,
+    config: Any,
     bot: Optional["ChiselBot"],
     discord_token: Optional[str],
     stop: asyncio.Event,
+    session: aiohttp.ClientSession,
 ) -> None:
-    """Run Quart and the optional Discord bot until a stop signal is received."""
+    """Run the worker loop and optional Discord bot until a stop signal is received."""
     tasks: list[asyncio.Task[Any]] = [
-        asyncio.create_task(app.run_task(host='0.0.0.0', port=port), name='quart'),
+        asyncio.create_task(worker_loop(manager, config, bot, session), name='worker'),
     ]
     if bot is not None and discord_token:
         tasks.append(asyncio.create_task(bot.start(discord_token), name='discord'))
@@ -155,10 +60,6 @@ async def _run_until_stopped(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 async def main() -> None:
     config_path = os.environ.get('CONFIG_PATH', '/config/config.yml')
     config = load_config(config_path)
@@ -168,15 +69,17 @@ async def main() -> None:
     anthropic_key = os.environ.get('ANTHROPIC_API_KEY', '')
     oauth_token = os.environ.get('CLAUDE_CODE_OAUTH_TOKEN', '')
 
+    source_names = [s.name for s in config.poll_sources]
     logger.info(
         "Starting with config:\n"
         "  CONFIG_PATH=%s\n"
-        "  port=%s\n"
         "  repos_base_path=%s\n"
         "  log_dir=%s\n"
         "  agent_context_path=%s\n"
         "  max_turns=%s\n"
         "  job_timeout=%s\n"
+        "  poll_sources=%s\n"
+        "  poll_interval_seconds=%s\n"
         "  git_user_name=%s\n"
         "  git_user_email=%s\n"
         "  DISCORD_TOKEN=%s\n"
@@ -184,12 +87,13 @@ async def main() -> None:
         "  ANTHROPIC_API_KEY=%s\n"
         "  CLAUDE_CODE_OAUTH_TOKEN=%s",
         config_path,
-        config.port,
         config.repos_base_path,
         config.log_dir,
         config.agent_context_path,
         config.max_turns,
         config.job_timeout,
+        source_names,
+        config.poll_interval_seconds,
         config.git_user_name,
         config.git_user_email,
         _mask_token(discord_token) if discord_token else '(not set)',
@@ -221,7 +125,6 @@ async def main() -> None:
             logger.info("Repo already present at %s", repo.local_path)
 
     # --- Authenticate gh CLI ---
-    # GITHUB_TOKEN in the environment is used automatically by gh; no login step needed.
     if github_token:
         await _run_cmd_startup(["gh", "auth", "setup-git"])
     else:
@@ -243,12 +146,11 @@ async def main() -> None:
         from bot import ChiselBot
         bot = ChiselBot(manager, config)
 
-    app = create_app(manager, config, bot)
-
-    try:
-        await _run_until_stopped(app, config.port, bot, discord_token, stop)
-    finally:
-        logger.info('Shutdown complete.')
+    async with aiohttp.ClientSession() as session:
+        try:
+            await _run_until_stopped(manager, config, bot, discord_token, stop, session)
+        finally:
+            logger.info('Shutdown complete.')
 
 
 if __name__ == '__main__':

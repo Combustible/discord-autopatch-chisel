@@ -18,7 +18,7 @@ venv: $(VENV)/bin/activate
 test: lint typecheck
 
 lint: venv
-	$(VENV)/bin/pylint chisel/ server.py bot.py
+	$(VENV)/bin/pylint chisel/ main.py bot.py
 
 typecheck: venv
 	$(VENV)/bin/pyright

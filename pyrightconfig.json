@@ -3,6 +3,6 @@
   "venvPath": ".",
   "venv": ".venv",
   "typeCheckingMode": "strict",
-  "include": ["chisel", "server.py", "bot.py"],
+  "include": ["chisel", "main.py", "bot.py"],
   "reportUnusedFunction": "none"
 }

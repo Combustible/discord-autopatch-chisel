@@ -1,6 +1,6 @@
 # Chisel
 
-Chisel is a Python microservice that accepts plain-text task prompts via HTTP or Discord,
+Chisel is a Python service that polls configurable sources for task prompts,
 invokes the Claude Code CLI agent against one or more locally-cloned git repositories, and
 reports outcomes via HTTP callback or Discord DM.
 
@@ -11,9 +11,8 @@ identify a clean solution, it writes an abort file and the job is declined with 
 operations performed.
 
 Chisel is generic: it knows nothing about exceptions, Discord channels, or fingerprints.
-Any system that can POST a text prompt and receive a structured callback can use it. The
-first client is a Minecraft server exception tracker that renders a template with exception
-data and POSTs to `/submit`.
+Any system that exposes a compatible polling endpoint can use it. The first client is a
+Minecraft server exception tracker.
 
 ---
 
@@ -21,7 +20,9 @@ data and POSTs to `/submit`.
 
 - **No database.** All state is in-memory. The ops channel, log files, and git history are
   the durable record. State is lost on restart; deduplication is best-effort.
-- **Sequential processing.** One job runs at a time. Additional submissions queue up.
+- **Sequential processing.** One job runs at a time. Discord `/chisel` jobs queue up.
+- **No inbound connectivity required.** Chisel is an HTTP client only. It polls configured
+  sources for work and POSTs results back when done. No HTTP server is exposed.
 - **Orchestrator owns git.** The Claude agent edits files only. All `git add`, `git commit`,
   `git push`, and `gh pr create` operations are performed by the orchestrator after the
   agent exits cleanly. The agent is explicitly instructed not to run git commands.
@@ -38,10 +39,10 @@ data and POSTs to `/submit`.
 
 ```
 chisel/
-+-- server.py              # Quart app factory, _run_until_stopped(), main()
-+-- bot.py                 # ChiselBot (discord.py)
-+-- agent_context.md       # Agent instructions (version-controlled, operator-editable)
-+-- config.yml.example     # Documented config reference; copy/mount as config.yml
++-- main.py               # Entry point: startup, shutdown, signal handling
++-- bot.py                # ChiselBot (discord.py)
++-- agent_context.md      # Agent instructions (version-controlled, operator-editable)
++-- config.yml.example    # Documented config reference; copy/mount as config.yml
 +-- Dockerfile
 +-- Makefile
 +-- requirements.txt
@@ -49,9 +50,9 @@ chisel/
 +-- pyrightconfig.json
 +-- chisel/
     +-- __init__.py
-    +-- config.py          # ChiselConfig, RepoConfig, DiscordConfig, load_config()
-    +-- api.py             # ChiselManager: in-memory state, submit/dedup logic
-    +-- worker.py          # worker_loop(), run_job(), subprocess management
+    +-- config.py         # ChiselConfig, RepoConfig, PollSourceConfig, load_config()
+    +-- api.py            # ChiselManager: in-memory state, submit/dedup logic
+    +-- worker.py         # worker_loop(), run_job(), poll helpers, subprocess management
 ```
 
 ---
@@ -75,7 +76,6 @@ See `config.yml.example` for all options with documentation.
 Key fields:
 
 ```yaml
-port: 8080
 git_user_name: Chisel Bot
 git_user_email: chisel@example.com
 agent_context_path: /config/agent_context.md
@@ -83,6 +83,12 @@ repos_base_path: /repos
 log_dir: /logs
 max_turns: 40        # agent turn budget per job
 job_timeout: 0       # wall-clock seconds; 0 = indefinite
+poll_interval_seconds: 10  # sleep between poll cycles when no work is found
+
+poll_sources:
+  - name: Exception Tracker        # shown in ops channel
+    url: https://example.com/chisel/poll
+    basic_auth: "chisel:password"  # omit if not needed
 
 discord:
   ops_channel_id: 0
@@ -101,44 +107,44 @@ The `gh` CLI is authenticated using `GITHUB_TOKEN`.
 
 ---
 
-## HTTP API
+## Polling
 
-### `POST /submit`
+Chisel has no HTTP server. Instead it polls a configurable list of sources for work.
 
-Submit a job. Returns immediately.
+### Scheduling
 
-**Request:**
+Each cycle:
+1. Check the Discord `/chisel` queue (priority). If a job is queued, run it.
+2. Otherwise, POST to each poll source in order. Take the first job returned (HTTP 200).
+3. If all sources return 204 (no work), sleep `poll_interval_seconds` and repeat.
+
+After completing a job, Chisel retries the result callback with exponential backoff (initial
+5s, doubling up to 120s max) until a 2xx response is received. The next job is not started
+until the callback is successfully delivered.
+
+### Poll Request
+
+Chisel sends `POST <url>` with an empty JSON body `{}`. If `basic_auth` is configured,
+an `Authorization: Basic <base64>` header is included.
+
+### Poll Response
+
+**204 No Content** — no work available.
+
+**200 OK** — work available:
 ```json
 {
-  "message": "Fix the exception below...",
+  "message": "Fully rendered task description passed verbatim to the agent",
   "requester_id": "a1b2c3d4",
-  "callback_url": "http://caller/callback"
+  "callback_url": "https://caller.example.com/some/callback/path"
 }
 ```
 
-- `requester_id`: caller-defined string used for deduplication. Chisel generates `job_id`.
-- `callback_url`: optional. If omitted, no callback is sent on completion.
+A 200 response is a commitment: the same job must not be returned by a subsequent poll.
 
-**Response:**
-```json
-{ "job_id": "550e8400-...", "status": "queued" }
-```
-or
-```json
-{ "job_id": "550e8400-...", "status": "duplicate" }
-```
+### Callback
 
-`duplicate` means a job with the same `requester_id` is already queued or running.
-
-### `GET /health`
-
-Returns `200 OK`. No body.
-
----
-
-## Callback Schema
-
-POSTed to `callback_url` on job completion. Not sent for intermediate states.
+POSTed to `callback_url` on job completion:
 
 ```json
 {
@@ -156,6 +162,7 @@ POSTed to `callback_url` on job completion. Not sent for intermediate states.
 - `pr_url`: only present on `success`
 - `summary` and `detail` are always present (may be empty if the agent crashed before
   writing them)
+- User aborts via `/abort` produce `status: "failure"` with `message: "Aborted by <name>"`
 
 ---
 
@@ -172,14 +179,17 @@ Enabled when `DISCORD_TOKEN` is set. All command responses are ephemeral.
 `{p}` is the optional `slash_command_prefix` from config.
 
 Job status is posted to the configured `ops_channel_id` for all jobs regardless of source
-(HTTP or Discord):
+(Discord or poll):
 
 ```
-[STARTED]  `{job_id[:8]}` | req: `{requester_id}` | source: {/submit | display_name}
+[STARTED]  `{job_id[:8]}` | req: `{requester_id}` | source: {name}
 [SUCCESS]  `{job_id[:8]}` | {pr_url} | {short_message}
 [FAILURE]  `{job_id[:8]}` | {short_message}
 [DECLINED] `{job_id[:8]}` | {short_message}
 ```
+
+`source` is the Discord display name for `/chisel` jobs, or the poll source `name` for
+polled jobs.
 
 On all outcomes, the following non-empty files are attached: `prompt` (user-supplied),
 `summary`, `detail`, and `abort` (if present). Empty files are omitted.

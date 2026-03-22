@@ -15,8 +15,8 @@ class PendingJob:
     message: str
     callback_fn: Callable[["JobResult"], Awaitable[None]]
     submitted_at: float
-    source_user_id: Optional[int]    # Discord user ID; None for HTTP /submit
-    source_display_name: Optional[str]  # Discord display name; None for HTTP /submit
+    source_user_id: Optional[int]  # Discord user ID; None for poll-sourced jobs
+    source_label: str              # display name for ops channel
 
 
 @dataclass
@@ -38,16 +38,17 @@ class ChiselManager:
         self._queue: asyncio.Queue[PendingJob] = asyncio.Queue()
         self.current_proc: Optional[asyncio.subprocess.Process] = None  # pylint: disable=no-member
         self.abort_event: asyncio.Event = asyncio.Event()
+        self.aborting_user: Optional[str] = None
 
     def submit(
         self,
         requester_id: str,
         message: str,
         callback_fn: Callable[[JobResult], Awaitable[None]],
+        source_label: str,
         source_user_id: Optional[int] = None,
-        source_display_name: Optional[str] = None,
     ) -> tuple[str, str]:
-        """Submit a job. Returns (job_id, status) where status is 'queued' or 'duplicate'."""
+        """Submit a Discord job. Returns (job_id, status) where status is 'queued' or 'duplicate'."""
         if self.current_job and self.current_job.requester_id == requester_id:
             return self.current_job.job_id, "duplicate"
         for job in self.pending:
@@ -61,16 +62,26 @@ class ChiselManager:
             callback_fn=callback_fn,
             submitted_at=time.time(),
             source_user_id=source_user_id,
-            source_display_name=source_display_name,
+            source_label=source_label,
         )
         self.pending.append(job)
         self._queue.put_nowait(job)
         return job.job_id, "queued"
 
+    def try_get_discord_job(self) -> Optional[PendingJob]:
+        """Non-blocking: return a queued Discord job if available, else None."""
+        try:
+            return self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+
+    def abort(self, user_display_name: str) -> None:
+        """Signal the current job to abort, recording who triggered it."""
+        self.aborting_user = user_display_name
+        self.abort_event.set()
+        if self.current_proc is not None:
+            self.current_proc.terminate()
+
     def list_pending(self) -> list[PendingJob]:
         """Return all pending and currently-running jobs, in submission order."""
         return list(self.pending)
-
-    async def get_next_job(self) -> PendingJob:
-        """Block until a job is available and return it."""
-        return await self._queue.get()

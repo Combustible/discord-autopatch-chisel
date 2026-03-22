@@ -64,10 +64,7 @@ class ChiselBot(commands.Bot):
                 discord_files.append(
                     discord.File(io.BytesIO(content.encode('utf-8')), filename=filename)
                 )
-        try:
-            await channel.send(message, files=discord_files)
-        except discord.DiscordException:
-            logger.exception("Failed to post to ops channel")
+        await channel.send(message, files=discord_files)
 
     # --- DM helpers ---
 
@@ -75,17 +72,19 @@ class ChiselBot(commands.Bot):
         """DM the submitting user with the job outcome."""
         try:
             user = await self.fetch_user(discord_user_id)
-            body = result.summary if result.summary else result.message
-            quoted = '\n'.join(f'> {line}' for line in body.splitlines())
+        except discord.NotFound:
+            logger.warning("Could not find Discord user %d to DM", discord_user_id)
+            return
+        body = result.summary if result.summary else result.message
+        quoted = '\n'.join(f'> {line}' for line in body.splitlines())
+        try:
             await user.send(
                 f"Your chisel request `{result.job_id[:8]}` is complete.\n"
                 f"**Status:** {result.status}\n"
                 f"{quoted}"
             )
         except discord.Forbidden:
-            logger.exception("Could not DM user %d (DMs may be disabled)", discord_user_id)
-        except discord.DiscordException:
-            logger.exception("Failed to DM completion to user %d", discord_user_id)
+            logger.warning("Could not DM user %d (DMs may be disabled)", discord_user_id)
 
     # --- Permission check ---
 
@@ -129,8 +128,8 @@ class ChiselBot(commands.Bot):
                 requester_id=requester_id,
                 message=request,
                 callback_fn=_callback,
+                source_label=interaction.user.display_name,
                 source_user_id=user_id,
-                source_display_name=interaction.user.display_name,
             )
 
             if status == "queued":
@@ -161,9 +160,7 @@ class ChiselBot(commands.Bot):
                 return
 
             job_id = self.manager.current_job.job_id
-            self.manager.abort_event.set()
-            if self.manager.current_proc is not None:
-                self.manager.current_proc.terminate()
+            self.manager.abort(interaction.user.display_name)
             await interaction.followup.send(
                 f"Abort signal sent to job `{job_id[:8]}`.", ephemeral=True
             )
