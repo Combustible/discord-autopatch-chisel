@@ -180,7 +180,7 @@ async def _try_poll_source(
         if result.pr_url is not None:
             payload["pr_url"] = result.pr_url
         async with session.post(
-            callback_url, json=payload,
+            callback_url, headers=headers, json=payload,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as r:
             if r.status >= 400:
@@ -471,13 +471,28 @@ async def run_job(
     ])
 
     owner_repo = _repo_owner_name(changed_repo.github_url)
-    title = commit_msg.split('\n')[0][:72]
+    commit_lines = commit_msg.split('\n')
+    title = commit_lines[0][:72]
+    # Extract body: lines after the first blank line, excluding trailer lines
+    _TRAILER_PREFIXES = ("signed-off-by:", "co-authored-by:")
+    body_lines: list[str] = []
+    if len(commit_lines) > 2 and commit_lines[1].strip() == "":
+        for line in commit_lines[2:]:
+            if line.lower().startswith(_TRAILER_PREFIXES):
+                continue
+            body_lines.append(line)
+        # Strip leading/trailing blank lines from body
+        while body_lines and not body_lines[0].strip():
+            body_lines.pop(0)
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+    pr_body = "\n".join(body_lines)
     pr_out, _ = await run_cmd([
         "gh", "pr", "create",
         "--repo", owner_repo,
         "--head", branch_name,
         "--title", title,
-        "--body", summary,
+        "--body", pr_body,
     ])
     pr_url = pr_out.strip()
 
