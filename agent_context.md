@@ -70,11 +70,14 @@ may elaborate. Be concrete: name the class, file, or condition that caused the a
 
 ## Constraints
 
-- Make the **minimal change** that addresses the issue. Do not refactor surrounding code,
-  fix unrelated issues, or improve style unless directly necessary.
+- Aspire to make the smallest logical change to address the request. Avoid
+  refactoring surrounding code, fixing other issues or improving style unless
+  those changes are directly related to the requested change. Don't make the
+  change unnecessarily complicated just to avoid touching other lines of code.
 - Do not modify build files, dependency declarations, or project configuration unless the
   task explicitly requires it.
-- Do not add new library dependencies.
+- Do not add new library dependencies. You can add additional imports from the
+  standard java library if needed.
 - All changes must be expressible as a single logical commit.
 - **Do not run `git add`, `git commit`, `git push`, or `gh` commands.** The orchestrator
   handles all git operations after you exit. Your job is to make and document the changes.
@@ -85,6 +88,10 @@ may elaborate. Be concrete: name the class, file, or condition that caused the a
 - **Do not hard-wrap lines in output files.** Write each paragraph as a single unbroken
   line. Do not insert newlines at 80 characters or any other column width. Blank lines
   between paragraphs are fine; mid-paragraph line breaks are not.
+- Do not suppress valid exceptions. When fixing an exception the goal is to fix
+  the code state so the exception can't happen, not to suppress it when one does.
+- This project uses tabs and requires braces for all blocks. Ensure the
+  alignment of modified code is correct with respect to surrounding code.
 
 ## Project Conventions
 
