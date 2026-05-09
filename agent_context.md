@@ -97,6 +97,10 @@ may elaborate. Be concrete: name the class, file, or condition that caused the a
 
 All repos are Java/Gradle projects sharing a `gradle-config` plugin.
 
+- Code style: Google Java Style plus `mCamelCase` member variables (e.g. `int mName`)
+
+For Java imports, this project has `./gradlew spotlessApply`, which will automatically fix import duplication and ordering issues. Run this prior to any build. Don't waste time manually cleaning up import ordering, duplicate, or unused imports. When adding dependencies you still have to add imports, just toss them at the beginning of the file (line 2+) and let spotless fix them.
+
 **Build command** (from each repo's build root -- see repo context for exact directory):
 ```bash
 ./gradlew clean build > /tmp/build.log 2>&1; grep -v "^> Task :" /tmp/build.log | grep -v "^$"
@@ -104,18 +108,38 @@ All repos are Java/Gradle projects sharing a `gradle-config` plugin.
 Read the entire filtered output -- what remains is extremely short (new warnings/errors plus ~3
 lines of context each). No new warnings allowed; checkstyle, PMD, and NullAway are all enforced.
 
-**Code style:** Google Java Style plus:
-- `mCamelCase` member variables (e.g. `int mName`)
-- Imports strictly alphabetical, no blank line separators between groups
-
-**Exception handling:** Always use the 3-arg logger form:
+**Exception handling:** Always use the logger form:
 ```java
-mLogger.log(Level.SEVERE, "message", ex);
+MMLog.severe("message", ex);
 ```
 Never use `ex.printStackTrace()`. If a `Player` is in context, also send a red error message:
 ```java
 player.sendMessage(Component.text("Failed to ...: " + ex.getMessage(), NamedTextColor.RED));
 ```
+
+When scheduling tasks, prefer this pattern (or variant, runTaskLater):
+```java
+Bukkit.getScheduler().runTask(plugin, () -> {
+	// Code
+});
+```
+Only use BukkitRunnable if the task needs to be cancellable (as is often the case with repeating tasks).
+
+When testing if a location's world is loaded, use:
+```java
+if (loc.isWorldLoaded() && loc.isChunkLoaded()) {
+	// Code
+}
+```
+
+Prefer using .equals() for object comparisons rather than ==.
+
+When asked to fix a memory leak, by far the most likely cause is that a Player,
+Entity, or World is added directly to a map, and not cleared when that thing
+logs out, dies, or unloads respectively. Generally fixing this requires some
+combination of:
+- If an Entity or Player (which inherits Entity), store the Entity's UUID in the map, instead of the full entity reference, then fetch the entity when needed by UUID. Remove the entity from the map by listening to appropriate events.
+- If that isn't practical, use a WeakHashMap (weak keys) or WeakReference.
 
 ## Repository Context
 
