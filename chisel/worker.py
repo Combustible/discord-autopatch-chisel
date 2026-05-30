@@ -287,6 +287,7 @@ async def run_job(
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,  # 16 MB; default 64 KB is too small for large Grep results
         )
         manager.current_proc = proc
 
