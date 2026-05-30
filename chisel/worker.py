@@ -413,6 +413,19 @@ async def run_job(
             pr_url=None,
         )
 
+    result_text = str(result_event.get('result', ''))
+    if 'hit your limit' in result_text:
+        return JobResult(
+            job_id=job.job_id,
+            requester_id=job.requester_id,
+            status="failure",
+            message=result_text[:200],
+            summary=summary,
+            detail=detail,
+            abort=abort_text,
+            pr_url=None,
+        )
+
     if not commit_msg:
         return JobResult(
             job_id=job.job_id,
