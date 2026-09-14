@@ -473,6 +473,7 @@ async def run_job(
         )
 
     changed_repo = repos_with_changes[0]
+    commit_msg = f"{commit_msg}\n\nFixes exception: {job.requester_id}"
     await run_cmd(["git", "-C", changed_repo.local_path, "add", "-A"])
     await run_cmd([
         "git", "-C", changed_repo.local_path,
@@ -488,11 +489,11 @@ async def run_job(
     commit_lines = commit_msg.split('\n')
     title = commit_lines[0][:72]
     # Extract body: lines after the first blank line, excluding trailer lines
-    _TRAILER_PREFIXES = ("signed-off-by:", "co-authored-by:")
+    trailer_prefixes = ("signed-off-by:", "co-authored-by:", "fixes exception:")
     body_lines: list[str] = []
     if len(commit_lines) > 2 and commit_lines[1].strip() == "":
         for line in commit_lines[2:]:
-            if line.lower().startswith(_TRAILER_PREFIXES):
+            if line.lower().startswith(trailer_prefixes):
                 continue
             body_lines.append(line)
         # Strip leading/trailing blank lines from body
@@ -501,6 +502,7 @@ async def run_job(
         while body_lines and not body_lines[-1].strip():
             body_lines.pop()
     pr_body = "\n".join(body_lines)
+    pr_body = f"{pr_body}\n\nFixes exception: {job.requester_id}".lstrip("\n")
     pr_out, _ = await run_cmd([
         "gh", "pr", "create",
         "--repo", owner_repo,

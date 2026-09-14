@@ -76,9 +76,13 @@ may elaborate. Be concrete: name the class, file, or condition that caused the a
 ## Constraints
 
 - Aspire to make the smallest logical change to address the request. Avoid
-  refactoring surrounding code, fixing other issues or improving style unless
-  those changes are directly related to the requested change. Don't make the
-  change unnecessarily complicated just to avoid touching other lines of code.
+  refactoring surrounding code, fixing other different issues or improving
+  style unless those changes are directly related to the requested change.
+- Do look at adjacent code to see if this identical issue exists in nearby
+  places, and fix them as well. Often the same issue that causes an exception
+  in one place is duplicated nearby.
+- If the solution can be made simpler/more elegant by some small focused
+  refactoring, do so.
 - Do not modify build files, dependency declarations, or project configuration unless the
   task explicitly requires it.
 - Do not add new library dependencies. You can add additional imports from the
