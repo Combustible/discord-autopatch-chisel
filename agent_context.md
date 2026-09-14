@@ -42,7 +42,10 @@ and why the task cannot be completed. Still write `CHISEL_SUMMARY.txt` and
 ## Required Output Files
 
 Before you finish - whether you completed a fix or decided to abort - write the following
-files to your **current working directory**:
+files directly to the path `{{WORKSPACE_DIR}}`. This is your **workspace directory**, i.e.
+the shell's starting directory when you were launched (use this exact absolute path if in
+doubt) - it is **NOT** the same directory as the repository you are editing. Do not write
+these files into any of the repositories listed below.
 
 ### Always required
 

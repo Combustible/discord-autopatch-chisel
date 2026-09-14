@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def build_prompt(config: ChiselConfig, request: str) -> str:
+def build_prompt(config: ChiselConfig, request: str, workspace_dir: Path) -> str:
     preamble = Path(config.agent_context_path).read_text(encoding='utf-8')
+    preamble = preamble.replace("{{WORKSPACE_DIR}}", str(workspace_dir.resolve()))
     repo_sections: list[str] = []
     for repo in config.repos:
         name = Path(repo.local_path).name
@@ -243,11 +244,17 @@ async def run_job(
     # --- Step 2: Prep repos ---
     for repo in config.repos:
         await run_cmd(["git", "-C", repo.local_path, "fetch", "origin"])
+        # Discard any uncommitted changes left behind by a previous job (e.g. one that
+        # exited without reaching the commit) before branching off main. git checkout -b
+        # alone does not do this, it carries a dirty working tree forward unchanged.
+        await run_cmd([
+            "git", "-C", repo.local_path, "reset", "--hard", f"origin/{repo.main_branch}",
+        ])
+        await run_cmd(["git", "-C", repo.local_path, "clean", "-fd"])
         await run_cmd([
             "git", "-C", repo.local_path, "checkout", "-b",
             branch_name, f"origin/{repo.main_branch}",
         ])
-        await run_cmd(["git", "-C", repo.local_path, "clean", "-fd"])
 
     # --- Step 3: Create workspace dir ---
     job_dir = Path(config.log_dir) / f"{timestamp}-{job.job_id}"
@@ -255,7 +262,7 @@ async def run_job(
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Step 4: Build and write prompt ---
-    prompt = build_prompt(config, job.message)
+    prompt = build_prompt(config, job.message, workspace_dir)
     (job_dir / "CHISEL_PROMPT.txt").write_text(job.message, encoding='utf-8')
     (job_dir / "CHISEL_FULL_PROMPT.txt").write_text(prompt, encoding='utf-8')
 
