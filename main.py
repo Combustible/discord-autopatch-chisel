@@ -77,6 +77,7 @@ async def main() -> None:
         "  log_dir=%s\n"
         "  agent_context_path=%s\n"
         "  max_turns=%s\n"
+        "  model=%s\n"
         "  job_timeout=%s\n"
         "  poll_sources=%s\n"
         "  poll_interval_seconds=%s\n"
@@ -91,6 +92,7 @@ async def main() -> None:
         config.log_dir,
         config.agent_context_path,
         config.max_turns,
+        config.model or '(CLI default)',
         config.job_timeout,
         source_names,
         config.poll_interval_seconds,

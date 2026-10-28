@@ -17,6 +17,25 @@ log_dir: /logs
 # Increase if jobs are consistently hitting the limit on legitimate tasks.
 max_turns: 40
 
+# Model the agent uses (passed to `claude --model`). Omit or leave empty to use the claude CLI's
+# default, which depends on the CLI version and auth type.
+# Options, as of claude CLI 2.1.312 (the list changes between CLI releases):
+#   Aliases (resolve to the latest model in the family):
+#     sonnet, opus, haiku, fable, best
+#     sonnet[1m], opus[1m], fable[1m]   (1M-token context window)
+#     opusplan                          (Opus in plan mode, Sonnet otherwise)
+#   Full model names (append [1m] where supported for a 1M context window):
+#     claude-fable-5, claude-fable-5-1
+#     claude-mythos-5, claude-mythos-5-1
+#     claude-opus-5, claude-opus-5-5
+#     claude-opus-4-8, claude-opus-4-7, claude-opus-4-6, claude-opus-4-5, claude-opus-4-1, claude-opus-4-0
+#     claude-sonnet-5, claude-sonnet-5-5
+#     claude-sonnet-4-6, claude-sonnet-4-5, claude-sonnet-4-0
+#     claude-haiku-5-5, claude-haiku-4-5
+#     claude-3-7-sonnet, claude-3-5-sonnet, claude-3-5-haiku
+# Which of these your account can actually use depends on your plan/API access.
+# model: opus
+
 # Job wall-clock timeout in seconds. 0 = indefinite (default).
 # If set, the job is killed and marked failed after this many seconds regardless of turns used.
 job_timeout: 0

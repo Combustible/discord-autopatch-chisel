@@ -3,7 +3,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 import yaml
 
@@ -37,6 +37,7 @@ class ChiselConfig:
     log_dir: str
     agent_context_path: str
     max_turns: int           # default 40
+    model: Optional[str]     # passed to `claude --model`; None = CLI default
     job_timeout: int         # 0 = indefinite
     git_user_name: str       # used for commits made by the orchestrator
     git_user_email: str      # used for commits made by the orchestrator
@@ -105,6 +106,7 @@ def load_config(path: str) -> ChiselConfig:
         log_dir=str(data.get('log_dir', '/logs')),
         agent_context_path=str(data.get('agent_context_path', '/config/agent_context.md')),
         max_turns=int(data.get('max_turns', 40)),
+        model=str(data.get('model') or '').strip() or None,
         job_timeout=int(data.get('job_timeout', 0)),
         git_user_name=str(git_user_name),
         git_user_email=str(git_user_email),

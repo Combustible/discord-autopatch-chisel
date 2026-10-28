@@ -285,6 +285,8 @@ async def run_job(
             "--disallowedTools", "WebFetch,WebSearch",
             "--max-turns", str(config.max_turns),
         ]
+        if config.model:
+            cmd += ["--model", config.model]
 
         logger.info("Launching agent for job %s: %s", job.job_id, " ".join(cmd))
 

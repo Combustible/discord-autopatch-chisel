@@ -82,6 +82,7 @@ agent_context_path: /config/agent_context.md
 repos_base_path: /repos
 log_dir: /logs
 max_turns: 40        # agent turn budget per job
+model: opus          # optional; passed to `claude --model` (omit for the CLI default)
 job_timeout: 0       # wall-clock seconds; 0 = indefinite
 poll_interval_seconds: 10  # sleep between poll cycles when no work is found
 
